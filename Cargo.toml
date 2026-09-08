@@ -1,0 +1,22 @@
+[package]
+name = "batch-file-renamer"
+version = "0.1.0"
+edition = "2021"
+description = "一层文件批量重命名工具（Excel 对照表 + 改名账本回滚）"
+license = "MIT"
+repository = "https://github.com/TheNanoWhale/batch-file-renamer"
+
+[dependencies]
+calamine = "0.26"
+chrono = { version = "0.4", features = ["clock", "std"] }
+eframe = { version = "0.31", default-features = true }
+egui = "0.31"
+rfd = "0.15"
+rust_xlsxwriter = "0.80"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

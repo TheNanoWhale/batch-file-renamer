@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+.idea/
+.vscode/
+*.xlsx
+!tests/fixtures/*.xlsx
+rename_backup/
