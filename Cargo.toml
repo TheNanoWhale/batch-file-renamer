@@ -1,6 +1,6 @@
 [package]
 name = "batch-file-renamer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "一层文件批量重命名工具（Excel 对照表 + 改名账本回滚）"
 license = "MIT"
