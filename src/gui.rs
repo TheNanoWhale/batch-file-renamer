@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame,
-    Margin, RichText, Sense, Stroke, Vec2,
+    self, Align, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame,
+    Layout, Margin, RichText, Stroke, Vec2,
 };
 use rfd::FileDialog;
 
@@ -22,6 +22,8 @@ pub struct RenamerApp {
     status: String,
     error: String,
     last_ledger: Option<PathBuf>,
+    last_export: Option<PathBuf>,
+    show_preview: bool,
 }
 
 impl Default for RenamerApp {
@@ -35,6 +37,8 @@ impl Default for RenamerApp {
             status: String::new(),
             error: String::new(),
             last_ledger: None,
+            last_export: None,
+            show_preview: false,
         }
     }
 }
@@ -51,16 +55,14 @@ impl RenamerApp {
         if let Some(path) = FileDialog::new().set_title("选择根目录").pick_folder() {
             match scan_one_level(&path) {
                 Ok(scan) => {
-                    self.status = format!(
-                        "已扫描 {} 个文件，合计 {}",
-                        scan.files.len(),
-                        format_bytes(scan.total_size)
-                    );
+                    self.status = "已选择根目录。".into();
                     self.root = Some(path);
                     self.scan = Some(scan);
                     self.preview = None;
                     self.excel_path = None;
                     self.confirmed = false;
+                    self.show_preview = false;
+                    self.last_export = None;
                     if let Ok(ledger) = find_latest_ledger(self.root.as_ref().unwrap()) {
                         self.last_ledger = Some(ledger);
                     }
@@ -85,7 +87,10 @@ impl RenamerApp {
             return;
         };
         match export_mapping(&path, &scan.files) {
-            Ok(()) => self.status = format!("已导出: {}", path.display()),
+            Ok(()) => {
+                self.last_export = Some(path);
+                self.status = "Excel 对照表已导出。".into();
+            }
             Err(e) => self.error = e.to_string(),
         }
     }
@@ -111,15 +116,11 @@ impl RenamerApp {
                     .map(|s| s.files.clone())
                     .unwrap_or_default();
                 let preview = build_preview(&root, &rows, &files);
-                self.status = format!(
-                    "预览：将改名 {}，跳过 {}，拒绝 {}。新文件名称必须含完整扩展名（如 .fastq.gz）",
-                    preview.rename_count(),
-                    preview.skip_count(),
-                    preview.reject_count()
-                );
+                self.status = "已选择 Excel 文件。".into();
                 self.excel_path = Some(path);
                 self.preview = Some(preview);
                 self.confirmed = false;
+                self.show_preview = false;
             }
             Err(e) => self.error = e.to_string(),
         }
@@ -132,7 +133,7 @@ impl RenamerApp {
             return;
         };
         let Some(preview) = self.preview.as_ref() else {
-            self.error = "请先上传 Excel 并预览".into();
+            self.error = "请先选择 Excel 文件".into();
             return;
         };
         if let Some(err) = &preview.blocking_error {
@@ -169,6 +170,7 @@ impl RenamerApp {
                 }
                 self.preview = None;
                 self.confirmed = false;
+                self.show_preview = false;
             }
             Err(e) => self.error = e.to_string(),
         }
@@ -225,45 +227,20 @@ impl RenamerApp {
 impl eframe::App for RenamerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(56.0)
+            .exact_height(32.0)
             .frame(
                 Frame::new()
-                    .fill(if self.error.is_empty() {
-                        Color32::from_rgb(239, 246, 255)
-                    } else {
-                        Color32::from_rgb(254, 226, 226)
-                    })
-                    .inner_margin(Margin::symmetric(16, 10))
-                    .stroke(Stroke::new(
-                        1.0_f32,
-                        if self.error.is_empty() {
-                            Color32::from_rgb(191, 219, 254)
-                        } else {
-                            Color32::from_rgb(252, 165, 165)
-                        },
-                    )),
+                    .fill(Color32::from_rgb(250, 250, 250))
+                    .inner_margin(Margin::symmetric(12, 6))
+                    .stroke(Stroke::new(1.0_f32, C_LINE)),
             )
             .show(ctx, |ui| {
                 if !self.error.is_empty() {
-                    ui.label(
-                        RichText::new(&self.error)
-                            .size(17.0)
-                            .color(C_DANGER)
-                            .strong(),
-                    );
+                    ui.label(RichText::new(&self.error).size(13.0).color(C_DANGER));
                 } else if !self.status.is_empty() {
-                    ui.label(
-                        RichText::new(&self.status)
-                            .size(17.0)
-                            .color(C_PRIMARY_DARK)
-                            .strong(),
-                    );
+                    ui.label(RichText::new(&self.status).size(13.0).color(C_MUTED));
                 } else {
-                    ui.label(
-                        RichText::new("准备就绪：请先选择根目录。")
-                            .size(17.0)
-                            .color(C_MUTED),
-                    );
+                    ui.label(RichText::new("就绪").size(13.0).color(C_MUTED));
                 }
             });
 
@@ -271,310 +248,334 @@ impl eframe::App for RenamerApp {
             .frame(
                 Frame::new()
                     .fill(C_BG)
-                    .inner_margin(Margin::symmetric(20, 16)),
+                    .inner_margin(Margin::symmetric(16, 12)),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    warning_banner(ui);
-                    ui.add_space(16.0);
-
-                    section_card(ui, 1, "选择根目录并导出对照表", "只扫描该目录下一层文件，不进入子文件夹，不改文件夹名。", |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            if filled_button(ui, "选择根目录…", C_PRIMARY, true).clicked() {
-                                self.pick_root();
-                            }
-                            if filled_button(ui, "导出 Excel 对照表…", C_SUCCESS, self.scan.is_some())
-                                .clicked()
-                            {
-                                self.export_excel();
-                            }
-                        });
+                    centered_content(ui, |ui| {
+                        warning_bar(ui);
                         ui.add_space(10.0);
-                        if let Some(root) = &self.root {
-                            info_line(ui, "根目录", &root.display().to_string());
-                        }
-                        if let Some(scan) = &self.scan {
-                            info_line(
-                                ui,
-                                "扫描结果",
-                                &format!(
-                                    "{} 个文件 · {}",
-                                    scan.files.len(),
-                                    format_bytes(scan.total_size)
-                                ),
-                            );
-                        }
-                    });
 
-                    ui.add_space(14.0);
-
-                    section_card(ui, 2, "上传已填写的 Excel，批量改名", "请先在 Excel「新文件名称」列填写完整文件名（含扩展名），再上传。空单元格将跳过。", |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            if filled_button(ui, "上传 Excel…", C_PRIMARY, self.root.is_some())
-                                .clicked()
-                            {
-                                self.load_excel();
-                            }
-                            let can_run = self.preview.as_ref().is_some_and(|p| {
-                                p.blocking_error.is_none() && p.rename_count() > 0 && self.confirmed
-                            });
-                            if filled_button(ui, "执行批量改名", C_DANGER, can_run).clicked() {
-                                self.execute_rename();
-                            }
-                        });
-                        ui.add_space(10.0);
-                        ui.checkbox(
-                            &mut self.confirmed,
-                            RichText::new("我已核对 Excel，确认扩展名与新文件名称无误")
-                                .size(17.0)
-                                .color(C_TEXT)
-                                .strong(),
-                        );
-                        if self.preview.is_some() && !self.confirmed {
+                        panel(ui, |ui| {
+                            section_title(ui, "①  准备文件");
                             ui.label(
-                                RichText::new("勾选上方核对项后，「执行批量改名」才会亮起。")
-                                    .size(15.0)
-                                    .color(C_WARN),
+                                RichText::new("选择根目录后导出对照表。只扫描下一层文件，不进入子文件夹。")
+                                    .size(12.5)
+                                    .color(C_MUTED),
                             );
-                        }
-                        if let Some(p) = &self.excel_path {
-                            ui.add_space(6.0);
-                            info_line(ui, "Excel", &p.display().to_string());
-                        }
-                        if let Some(preview) = &self.preview {
                             ui.add_space(8.0);
-                            ui.label(
-                                RichText::new(format!(
-                                    "将改名 {}  ·  跳过 {}  ·  拒绝 {}",
-                                    preview.rename_count(),
-                                    preview.skip_count(),
-                                    preview.reject_count()
-                                ))
-                                .size(16.0)
-                                .color(C_PRIMARY_DARK)
-                                .strong(),
-                            );
-                            if let Some(err) = &preview.blocking_error {
-                                ui.label(
-                                    RichText::new(err).color(C_DANGER).size(17.0).strong(),
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                if primary_button(ui, "选择根目录…", true).clicked() {
+                                    self.pick_root();
+                                }
+                                if secondary_button(ui, "导出 Excel", self.scan.is_some()).clicked()
+                                {
+                                    self.export_excel();
+                                }
+                            });
+                            if let Some(root) = &self.root {
+                                ui.add_space(8.0);
+                                field_row(ui, "根目录", &root.display().to_string());
+                            }
+                            if let Some(scan) = &self.scan {
+                                field_row(
+                                    ui,
+                                    "扫描结果",
+                                    &format!(
+                                        "{} 个文件 · {}",
+                                        scan.files.len(),
+                                        format_bytes(scan.total_size)
+                                    ),
                                 );
                             }
-                            Frame::new()
-                                .fill(Color32::from_rgb(248, 250, 252))
-                                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(226, 232, 240)))
-                                .inner_margin(Margin::same(10))
-                                .corner_radius(CornerRadius::same(8))
-                                .show(ui, |ui| {
-                                    ui.set_min_height(160.0);
-                                    egui::ScrollArea::vertical()
-                                        .max_height(220.0)
-                                        .show(ui, |ui| {
-                                            for action in &preview.actions {
-                                                match action {
-                                                    RowAction::Rename { old_name, new_name } => {
-                                                        ui.label(
-                                                            RichText::new(format!(
-                                                                "{old_name}  →  {new_name}"
-                                                            ))
-                                                            .size(16.0)
-                                                            .color(C_SUCCESS_DARK),
-                                                        );
-                                                    }
-                                                    RowAction::Skip { old_name, reason } => {
-                                                        ui.label(
-                                                            RichText::new(format!(
-                                                                "跳过 {old_name}：{reason}"
-                                                            ))
-                                                            .size(15.0)
-                                                            .color(C_MUTED),
-                                                        );
-                                                    }
-                                                    RowAction::Reject {
-                                                        old_name,
-                                                        new_name,
-                                                        reason,
-                                                    } => {
-                                                        ui.label(
-                                                            RichText::new(format!(
-                                                                "拒绝 {old_name} → {new_name}：{reason}"
-                                                            ))
-                                                            .size(16.0)
-                                                            .color(C_DANGER),
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        });
-                                });
-                        }
-                    });
-
-                    ui.add_space(14.0);
-
-                    section_card(ui, 3, "按账本回滚文件名", "账本只记录旧名/新名，不复制测序数据。回滚会把已成功改名的文件改回原名。", |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            if outline_button(
-                                ui,
-                                "回滚最近一次改名",
-                                C_WARN,
-                                self.root.is_some(),
-                            )
-                            .clicked()
-                            {
-                                self.rollback();
-                            }
-                            if outline_button(ui, "选择账本 JSON 回滚…", C_MUTED, true).clicked()
-                            {
-                                self.pick_ledger_rollback();
+                            if let Some(path) = &self.last_export {
+                                field_row(ui, "已导出", &path.display().to_string());
                             }
                         });
-                        if let Some(p) = &self.last_ledger {
-                            ui.add_space(10.0);
-                            info_line(ui, "当前账本", &p.display().to_string());
-                        }
-                    });
 
-                    ui.add_space(12.0);
+                        ui.add_space(10.0);
+
+                        panel(ui, |ui| {
+                            section_title(ui, "②  执行改名");
+                            ui.label(
+                                RichText::new("选择已填写「新文件名称」的 Excel（须含完整扩展名）。空单元格将跳过。")
+                                    .size(12.5)
+                                    .color(C_MUTED),
+                            );
+                            ui.add_space(8.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                if primary_button(ui, "选择 Excel 文件…", self.root.is_some())
+                                    .clicked()
+                                {
+                                    self.load_excel();
+                                }
+                                let can_run = self.preview.as_ref().is_some_and(|p| {
+                                    p.blocking_error.is_none()
+                                        && p.rename_count() > 0
+                                        && self.confirmed
+                                });
+                                if danger_button(ui, "执行批量改名", can_run).clicked() {
+                                    self.execute_rename();
+                                }
+                            });
+                            ui.add_space(6.0);
+                            ui.checkbox(
+                                &mut self.confirmed,
+                                RichText::new("我已核对 Excel，确认扩展名与新文件名称无误")
+                                    .size(13.0)
+                                    .color(C_TEXT),
+                            );
+                            if let Some(p) = &self.excel_path {
+                                ui.add_space(6.0);
+                                field_row(
+                                    ui,
+                                    "Excel",
+                                    &p.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| p.display().to_string()),
+                                );
+                                field_row(ui, "路径", &p.display().to_string());
+                            }
+                            if let Some(preview) = &self.preview {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new("校验结果")
+                                        .size(13.0)
+                                        .strong()
+                                        .color(C_TEXT),
+                                );
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 16.0;
+                                    stat_chip(ui, "总记录", preview.actions.len());
+                                    stat_chip(ui, "将改名", preview.rename_count());
+                                    stat_chip(ui, "跳过", preview.skip_count());
+                                    stat_chip(ui, "错误", preview.reject_count());
+                                });
+                                if let Some(err) = &preview.blocking_error {
+                                    ui.add_space(4.0);
+                                    ui.label(RichText::new(err).size(13.0).color(C_DANGER));
+                                }
+                                ui.add_space(6.0);
+                                let preview_label = if self.show_preview {
+                                    "收起改名预览"
+                                } else {
+                                    "查看改名预览"
+                                };
+                                if secondary_button(ui, preview_label, true).clicked() {
+                                    self.show_preview = !self.show_preview;
+                                }
+                                if self.show_preview {
+                                    ui.add_space(6.0);
+                                    Frame::new()
+                                        .fill(Color32::from_rgb(250, 250, 250))
+                                        .stroke(Stroke::new(1.0_f32, C_LINE))
+                                        .inner_margin(Margin::same(8))
+                                        .corner_radius(CornerRadius::same(4))
+                                        .show(ui, |ui| {
+                                            egui::ScrollArea::vertical()
+                                                .max_height(180.0)
+                                                .show(ui, |ui| {
+                                                    for action in &preview.actions {
+                                                        match action {
+                                                            RowAction::Rename {
+                                                                old_name,
+                                                                new_name,
+                                                            } => {
+                                                                ui.label(
+                                                                    RichText::new(format!(
+                                                                        "{old_name}  →  {new_name}"
+                                                                    ))
+                                                                    .size(13.0)
+                                                                    .color(C_TEXT),
+                                                                );
+                                                            }
+                                                            RowAction::Skip { old_name, reason } => {
+                                                                ui.label(
+                                                                    RichText::new(format!(
+                                                                        "跳过 {old_name}：{reason}"
+                                                                    ))
+                                                                    .size(12.5)
+                                                                    .color(C_MUTED),
+                                                                );
+                                                            }
+                                                            RowAction::Reject {
+                                                                old_name,
+                                                                new_name,
+                                                                reason,
+                                                            } => {
+                                                                ui.label(
+                                                                    RichText::new(format!(
+                                                                        "错误 {old_name} → {new_name}：{reason}"
+                                                                    ))
+                                                                    .size(13.0)
+                                                                    .color(C_DANGER),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                        });
+                                }
+                            }
+                        });
+
+                        ui.add_space(14.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        panel(ui, |ui| {
+                            section_title(ui, "恢复与撤销");
+                            ui.label(
+                                RichText::new("账本只记录旧名/新名。回滚会把已成功改名的文件改回原名。")
+                                    .size(12.5)
+                                    .color(C_MUTED),
+                            );
+                            ui.add_space(8.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                if secondary_button(ui, "回滚最近一次改名", self.root.is_some())
+                                    .clicked()
+                                {
+                                    self.rollback();
+                                }
+                                if secondary_button(ui, "选择账本 JSON…", true).clicked() {
+                                    self.pick_ledger_rollback();
+                                }
+                            });
+                            if let Some(p) = &self.last_ledger {
+                                ui.add_space(8.0);
+                                field_row(ui, "当前账本", &p.display().to_string());
+                            }
+                        });
+                    });
                 });
             });
     }
 }
 
-const C_BG: Color32 = Color32::from_rgb(241, 245, 249);
-const C_TEXT: Color32 = Color32::from_rgb(15, 23, 42);
-const C_MUTED: Color32 = Color32::from_rgb(71, 85, 105);
+const CONTENT_W: f32 = 700.0;
+const C_BG: Color32 = Color32::from_rgb(245, 245, 245);
+const C_TEXT: Color32 = Color32::from_rgb(32, 32, 32);
+const C_MUTED: Color32 = Color32::from_rgb(96, 96, 96);
+const C_LINE: Color32 = Color32::from_rgb(220, 220, 220);
 const C_PRIMARY: Color32 = Color32::from_rgb(37, 99, 235);
-const C_PRIMARY_DARK: Color32 = Color32::from_rgb(29, 78, 216);
-const C_SUCCESS: Color32 = Color32::from_rgb(22, 163, 74);
-const C_SUCCESS_DARK: Color32 = Color32::from_rgb(21, 128, 61);
-const C_DANGER: Color32 = Color32::from_rgb(220, 38, 38);
-const C_WARN: Color32 = Color32::from_rgb(217, 119, 6);
+const C_DANGER: Color32 = Color32::from_rgb(185, 28, 28);
 
 fn apply_theme(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
-    style.spacing.button_padding = Vec2::new(18.0, 12.0);
-    style.spacing.item_spacing = Vec2::new(12.0, 10.0);
-    style.spacing.indent = 18.0;
+    style.spacing.button_padding = Vec2::new(10.0, 5.0);
+    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
     style.visuals.panel_fill = C_BG;
     style.visuals.window_fill = C_BG;
     style.visuals.override_text_color = Some(C_TEXT);
     style.text_styles.insert(
         egui::TextStyle::Heading,
-        FontId::new(22.0, FontFamily::Proportional),
+        FontId::new(15.0, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Body,
-        FontId::new(16.0, FontFamily::Proportional),
+        FontId::new(13.0, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        FontId::new(18.0, FontFamily::Proportional),
+        FontId::new(13.0, FontFamily::Proportional),
     );
     ctx.set_style(style);
 }
 
-fn filled_button(ui: &mut egui::Ui, text: &str, fill: Color32, enabled: bool) -> egui::Response {
-    let label = RichText::new(text)
-        .size(18.0)
-        .color(Color32::WHITE)
-        .strong();
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(label)
-            .fill(fill)
-            .min_size(Vec2::new(200.0, 48.0))
-            .corner_radius(CornerRadius::same(8)),
-    )
+fn centered_content(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let width = ui.available_width();
+    let content = width.min(CONTENT_W);
+    let pad = ((width - content) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.allocate_ui_with_layout(
+            Vec2::new(content, ui.available_height()),
+            Layout::top_down(Align::Min).with_cross_justify(true),
+            add,
+        );
+    });
 }
 
-fn outline_button(ui: &mut egui::Ui, text: &str, color: Color32, enabled: bool) -> egui::Response {
-    let label = RichText::new(text).size(18.0).color(color).strong();
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(label)
-            .fill(Color32::WHITE)
-            .stroke(Stroke::new(2.0_f32, color))
-            .min_size(Vec2::new(200.0, 48.0))
-            .corner_radius(CornerRadius::same(8)),
-    )
-}
-
-fn warning_banner(ui: &mut egui::Ui) {
-    Frame::new()
-        .fill(Color32::from_rgb(254, 226, 226))
-        .stroke(Stroke::new(2.0_f32, Color32::from_rgb(220, 38, 38)))
-        .inner_margin(Margin::symmetric(18, 16))
-        .corner_radius(CornerRadius::same(10))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new("修改文件名需谨慎！请提前做好数据备份。")
-                    .color(Color32::from_rgb(153, 27, 27))
-                    .size(28.0)
-                    .strong(),
-            );
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(
-                    "本工具只改文件名、不复制文件内容。测序数据体积大，不会做文件拷贝备份。请先核对 Excel（新名称必须含完整扩展名，如 .fastq.gz / .bam），并保留导出的原始对照表。误操作可用改名账本回滚文件名。",
-                )
-                .color(Color32::from_rgb(127, 29, 29))
-                .size(16.0),
-            );
-        });
-}
-
-fn section_card(
-    ui: &mut egui::Ui,
-    step: u8,
-    title: &str,
-    hint: &str,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
+fn panel(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     Frame::new()
         .fill(Color32::WHITE)
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(203, 213, 225)))
-        .inner_margin(Margin::symmetric(18, 16))
-        .corner_radius(CornerRadius::same(10))
+        .stroke(Stroke::new(1.0_f32, C_LINE))
+        .inner_margin(Margin::symmetric(12, 10))
+        .corner_radius(CornerRadius::same(4))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(34.0, 34.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, CornerRadius::same(8), C_PRIMARY);
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    step.to_string(),
-                    FontId::proportional(18.0),
-                    Color32::WHITE,
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(title)
-                        .size(22.0)
-                        .strong()
-                        .color(C_TEXT),
-                );
-            });
-            ui.add_space(6.0);
-            ui.label(RichText::new(hint).size(15.0).color(C_MUTED));
-            ui.add_space(12.0);
-            add_contents(ui);
+            ui.set_min_width(ui.available_width());
+            add(ui);
         });
 }
 
-fn info_line(ui: &mut egui::Ui, label: &str, value: &str) {
+fn section_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(RichText::new(title).size(15.0).strong().color(C_TEXT));
+    ui.add_space(2.0);
+}
+
+fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(text).size(13.0).color(Color32::WHITE))
+            .fill(C_PRIMARY)
+            .min_size(Vec2::new(108.0, 30.0))
+            .corner_radius(CornerRadius::same(4)),
+    )
+}
+
+fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(text).size(13.0).color(C_TEXT))
+            .fill(Color32::WHITE)
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(180, 180, 180)))
+            .min_size(Vec2::new(108.0, 30.0))
+            .corner_radius(CornerRadius::same(4)),
+    )
+}
+
+fn danger_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(text).size(13.0).color(Color32::WHITE))
+            .fill(C_DANGER)
+            .min_size(Vec2::new(108.0, 30.0))
+            .corner_radius(CornerRadius::same(4)),
+    )
+}
+
+fn warning_bar(ui: &mut egui::Ui) {
+    Frame::new()
+        .fill(Color32::from_rgb(255, 247, 237))
+        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(253, 186, 116)))
+        .inner_margin(Margin::symmetric(10, 6))
+        .corner_radius(CornerRadius::same(4))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("修改文件名前请备份。本工具只改文件名，不复制文件内容。")
+                    .size(13.0)
+                    .color(Color32::from_rgb(154, 52, 18)),
+            );
+        });
+}
+
+fn field_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(
-            RichText::new(format!("{label}："))
-                .size(16.0)
-                .color(C_MUTED)
-                .strong(),
-        );
-        ui.label(RichText::new(value).size(16.0).color(C_PRIMARY_DARK));
+        ui.label(RichText::new(format!("{label}：")).size(12.5).color(C_MUTED));
+        ui.label(RichText::new(value).size(12.5).color(C_TEXT));
     });
+}
+
+fn stat_chip(ui: &mut egui::Ui, label: &str, value: usize) {
+    ui.label(
+        RichText::new(format!("{label} {value}"))
+            .size(13.0)
+            .color(C_TEXT),
+    );
 }
 
 fn setup_cjk_fonts(ctx: &egui::Context) {
@@ -621,8 +622,8 @@ fn setup_cjk_fonts(ctx: &egui::Context) {
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(Vec2::new(1080.0, 820.0))
-            .with_min_inner_size(Vec2::new(860.0, 640.0))
+            .with_inner_size(Vec2::new(840.0, 720.0))
+            .with_min_inner_size(Vec2::new(640.0, 520.0))
             .with_title("一层文件批量重命名"),
         ..Default::default()
     };
