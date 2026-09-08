@@ -9,8 +9,8 @@ use rfd::FileDialog;
 use batch_file_renamer::ledger::create_backup_dir;
 use batch_file_renamer::scan::{format_bytes, FileEntry, ScanResult};
 use batch_file_renamer::{
-    apply_renames, build_preview, export_mapping, find_latest_ledger, import_mapping, read_ledger,
-    rollback_ledger, scan_one_level, Preview, RowAction,
+    apply_renames, build_preview, build_restore_preview, export_mapping, import_mapping,
+    scan_one_level, Preview, RowAction,
 };
 
 pub struct RenamerApp {
@@ -21,7 +21,6 @@ pub struct RenamerApp {
     confirmed: bool,
     status: String,
     error: String,
-    last_ledger: Option<PathBuf>,
     last_export: Option<PathBuf>,
     show_preview: bool,
 }
@@ -36,7 +35,6 @@ impl Default for RenamerApp {
             confirmed: false,
             status: String::new(),
             error: String::new(),
-            last_ledger: None,
             last_export: None,
             show_preview: false,
         }
@@ -63,9 +61,6 @@ impl RenamerApp {
                     self.confirmed = false;
                     self.show_preview = false;
                     self.last_export = None;
-                    if let Ok(ledger) = find_latest_ledger(self.root.as_ref().unwrap()) {
-                        self.last_ledger = Some(ledger);
-                    }
                 }
                 Err(e) => self.error = e.to_string(),
             }
@@ -158,12 +153,9 @@ impl RenamerApp {
         };
         match apply_renames(&root, &pairs, &backup_dir) {
             Ok(out) => {
-                self.last_ledger = Some(out.ledger_path.clone());
                 self.status = format!(
-                    "完成：成功 {}，失败 {}。账本（可回滚）: {}",
-                    out.success,
-                    out.failed,
-                    out.ledger_path.display()
+                    "完成：成功 {}，失败 {}。可用同一份 Excel 把新名还原为旧名。",
+                    out.success, out.failed
                 );
                 if let Ok(scan) = scan_one_level(&root) {
                     self.scan = Some(scan);
@@ -176,51 +168,86 @@ impl RenamerApp {
         }
     }
 
-    fn rollback(&mut self) {
+    fn restore_from_excel_path(&mut self, path: PathBuf) {
         self.error.clear();
         let Some(root) = self.root.clone() else {
             self.error = "请先选择根目录".into();
             return;
         };
-        let ledger_path = if let Some(p) = self.last_ledger.clone() {
-            p
-        } else {
-            match find_latest_ledger(&root) {
-                Ok(p) => p,
-                Err(e) => {
-                    self.error = e.to_string();
-                    return;
-                }
+        let files = match scan_one_level(&root) {
+            Ok(scan) => {
+                self.scan = Some(scan.clone());
+                scan.files
+            }
+            Err(e) => {
+                self.error = e.to_string();
+                return;
             }
         };
-        match read_ledger(&ledger_path) {
-            Ok(ledger) => match rollback_ledger(&root, &ledger) {
-                Ok(out) => {
-                    self.status = format!(
-                        "回滚完成：成功 {}，失败 {}。回滚账本: {}",
-                        out.success,
-                        out.failed,
-                        out.ledger_path.display()
-                    );
-                    if let Ok(scan) = scan_one_level(&root) {
-                        self.scan = Some(scan);
-                    }
+        let rows = match import_mapping(&path) {
+            Ok(rows) => rows,
+            Err(e) => {
+                self.error = e.to_string();
+                return;
+            }
+        };
+        let preview = build_restore_preview(&root, &rows, &files);
+        if let Some(err) = &preview.blocking_error {
+            self.error = err.clone();
+            return;
+        }
+        let pairs = preview.planned_renames();
+        if pairs.is_empty() {
+            self.error = "对照表中没有可还原的改名项（请确认「新文件名称」对应的文件仍在目录中）".into();
+            return;
+        }
+        let backup_dir = match create_backup_dir(&root) {
+            Ok(d) => d,
+            Err(e) => {
+                self.error = e.to_string();
+                return;
+            }
+        };
+        match apply_renames(&root, &pairs, &backup_dir) {
+            Ok(out) => {
+                self.excel_path = Some(path);
+                self.status = format!(
+                    "已还原：成功 {}，失败 {}。文件名已按对照表改回「当前文件名称」。",
+                    out.success, out.failed
+                );
+                if let Ok(scan) = scan_one_level(&root) {
+                    self.scan = Some(scan);
                 }
-                Err(e) => self.error = e.to_string(),
-            },
+                self.preview = None;
+                self.confirmed = false;
+                self.show_preview = false;
+            }
             Err(e) => self.error = e.to_string(),
         }
     }
 
-    fn pick_ledger_rollback(&mut self) {
-        if let Some(path) = FileDialog::new()
-            .set_title("选择 rename_map.json 账本")
-            .add_filter("JSON", &["json"])
-            .pick_file()
-        {
-            self.last_ledger = Some(path);
-            self.rollback();
+    fn restore_from_current_excel(&mut self) {
+        let Some(path) = self.excel_path.clone() else {
+            self.error = "请先在第二步选择用于改名的 Excel 对照表".into();
+            return;
+        };
+        self.restore_from_excel_path(path);
+    }
+
+    fn pick_excel_restore(&mut self) {
+        self.error.clear();
+        if self.root.is_none() {
+            self.error = "请先选择根目录".into();
+            return;
         }
+        let Some(path) = FileDialog::new()
+            .set_title("选择改名用的 Excel 对照表")
+            .add_filter("Excel", &["xlsx", "xls"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.restore_from_excel_path(path);
     }
 }
 
@@ -429,25 +456,31 @@ impl eframe::App for RenamerApp {
                         panel(ui, |ui| {
                             section_title(ui, "恢复与撤销");
                             ui.label(
-                                RichText::new("账本只记录旧名/新名。回滚会把已成功改名的文件改回原名。")
+                                RichText::new("使用第二步同一份 Excel：把「新文件名称」改回「当前文件名称」。无需选择 JSON。")
                                     .size(12.5)
                                     .color(C_MUTED),
                             );
                             ui.add_space(8.0);
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
-                                if secondary_button(ui, "回滚最近一次改名", self.root.is_some())
+                                if secondary_button(
+                                    ui,
+                                    "用当前对照表还原",
+                                    self.root.is_some() && self.excel_path.is_some(),
+                                )
+                                .clicked()
+                                {
+                                    self.restore_from_current_excel();
+                                }
+                                if secondary_button(ui, "选择对照表还原…", self.root.is_some())
                                     .clicked()
                                 {
-                                    self.rollback();
-                                }
-                                if secondary_button(ui, "选择账本 JSON…", true).clicked() {
-                                    self.pick_ledger_rollback();
+                                    self.pick_excel_restore();
                                 }
                             });
-                            if let Some(p) = &self.last_ledger {
+                            if let Some(p) = &self.excel_path {
                                 ui.add_space(8.0);
-                                field_row(ui, "当前账本", &p.display().to_string());
+                                field_row(ui, "对照表", &p.display().to_string());
                             }
                         });
                     });
@@ -550,15 +583,21 @@ fn danger_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response
 
 fn warning_bar(ui: &mut egui::Ui) {
     Frame::new()
-        .fill(Color32::from_rgb(255, 247, 237))
-        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(253, 186, 116)))
-        .inner_margin(Margin::symmetric(10, 6))
+        .fill(Color32::from_rgb(185, 28, 28))
+        .stroke(Stroke::new(2.0_f32, Color32::from_rgb(127, 29, 29)))
+        .inner_margin(Margin::symmetric(12, 10))
         .corner_radius(CornerRadius::same(4))
         .show(ui, |ui| {
             ui.label(
-                RichText::new("修改文件名前请备份。本工具只改文件名，不复制文件内容。")
-                    .size(13.0)
-                    .color(Color32::from_rgb(154, 52, 18)),
+                RichText::new("修改文件名需谨慎，请提前做好数据备份！")
+                    .size(18.0)
+                    .color(Color32::WHITE)
+                    .strong(),
+            );
+            ui.label(
+                RichText::new("本工具只改文件名，不复制文件内容。测序大文件请先核对 Excel 再执行。")
+                    .size(14.0)
+                    .color(Color32::from_rgb(254, 226, 226)),
             );
         });
 }

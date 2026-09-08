@@ -185,6 +185,20 @@ pub fn build_preview(root: &Path, rows: &[(String, String)], disk_files: &[FileE
     }
 }
 
+/// 对照表列含义不变：「当前文件名称」= 旧名，「新文件名称」= 改后名。
+/// 还原时磁盘上已是新名，因此把两列对调后再走同一套校验。
+pub fn build_restore_preview(
+    root: &Path,
+    rows: &[(String, String)],
+    disk_files: &[FileEntry],
+) -> Preview {
+    let swapped: Vec<(String, String)> = rows
+        .iter()
+        .map(|(old_name, new_name)| (new_name.clone(), old_name.clone()))
+        .collect();
+    build_preview(root, &swapped, disk_files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +306,26 @@ mod tests {
         assert!(validate_filename("a:b.txt").is_err());
         assert!(validate_filename("CON.txt").is_err());
         assert!(validate_filename("ok.fastq.gz").is_ok());
+    }
+
+    #[test]
+    fn restore_preview_renames_new_back_to_old() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("new.bam"), b"data").unwrap();
+        let files = vec![FileEntry {
+            name: "new.bam".into(),
+            size: 4,
+        }];
+        let preview = build_restore_preview(
+            dir.path(),
+            &[("old.bam".into(), "new.bam".into())],
+            &files,
+        );
+        assert!(preview.blocking_error.is_none());
+        assert_eq!(preview.rename_count(), 1);
+        assert_eq!(
+            preview.planned_renames(),
+            vec![("new.bam".into(), "old.bam".into())]
+        );
     }
 }
