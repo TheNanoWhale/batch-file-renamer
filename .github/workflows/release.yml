@@ -25,19 +25,30 @@ jobs:
       - name: Build portable exe
         run: cargo build --release
 
+      - name: Name versioned exe
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          $name = "batch-file-renamer-v$ver.exe"
+          Copy-Item target/release/batch-file-renamer.exe "target/release/$name"
+          echo "EXE_NAME=$name" >> $env:GITHUB_ENV
+          echo "APP_VERSION=$ver" >> $env:GITHUB_ENV
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: batch-file-renamer-windows-x64
-          path: target/release/batch-file-renamer.exe
+          name: batch-file-renamer-v${{ env.APP_VERSION }}-windows-x64
+          path: target/release/${{ env.EXE_NAME }}
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/batch-file-renamer.exe
+          files: target/release/${{ env.EXE_NAME }}
           generate_release_notes: true
           body: |
-            免安装 Windows x64：下载 `batch-file-renamer.exe` 后直接双击运行。
+            版本 v${{ env.APP_VERSION }}
+
+            免安装 Windows x64：下载 `batch-file-renamer-v${{ env.APP_VERSION }}.exe` 后直接双击运行。
 
             **修改文件名需谨慎，请提前做好数据备份。** 本工具只改文件名，不复制测序数据。

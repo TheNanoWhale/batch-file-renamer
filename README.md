@@ -32,7 +32,7 @@
 
 ## 免安装 Windows 版
 
-由 GitHub Actions 在 `windows-latest` 上编译，产物为单个 `batch-file-renamer.exe`，拷贝后双击即可，无需安装。
+由 GitHub Actions 在 `windows-latest` 上编译，产物为单个带版本号的 exe，例如 `batch-file-renamer-v0.1.5.exe`，拷贝后双击即可，无需安装。页面标题和窗口标题会显示同一版本号。
 
 - 正式包：[Releases](https://github.com/TheNanoWhale/batch-file-renamer/releases)
 - 每次推送 `main` 也会留下 [Actions Artifact](https://github.com/TheNanoWhale/batch-file-renamer/actions)

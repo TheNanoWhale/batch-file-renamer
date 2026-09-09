@@ -301,13 +301,22 @@ impl eframe::App for RenamerApp {
                     .stroke(Stroke::new(1.0_f32, C_LINE)),
             )
             .show(ctx, |ui| {
-                if !self.error.is_empty() {
-                    ui.label(RichText::new(&self.error).size(13.0).color(C_DANGER));
-                } else if !self.status.is_empty() {
-                    ui.label(RichText::new(&self.status).size(13.0).color(C_MUTED));
-                } else {
-                    ui.label(RichText::new("就绪").size(13.0).color(C_MUTED));
-                }
+                ui.horizontal(|ui| {
+                    if !self.error.is_empty() {
+                        ui.label(RichText::new(&self.error).size(13.0).color(C_DANGER));
+                    } else if !self.status.is_empty() {
+                        ui.label(RichText::new(&self.status).size(13.0).color(C_MUTED));
+                    } else {
+                        ui.label(RichText::new("就绪").size(13.0).color(C_MUTED));
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("v{APP_VERSION}"))
+                                .size(12.0)
+                                .color(C_MUTED),
+                        );
+                    });
+                });
             });
 
         if let Some(message) = self.completion.clone() {
@@ -358,12 +367,21 @@ impl eframe::App for RenamerApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     centered_content(ui, |ui| {
-                        ui.label(
-                            RichText::new("文件批量重命名")
-                                .size(20.0)
-                                .strong()
-                                .color(C_TEXT),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("文件批量重命名")
+                                    .size(20.0)
+                                    .strong()
+                                    .color(C_TEXT),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(format!("v{APP_VERSION}"))
+                                    .size(16.0)
+                                    .color(C_MUTED)
+                                    .strong(),
+                            );
+                        });
                         ui.add_space(8.0);
                         warning_bar(ui);
                         ui.add_space(10.0);
@@ -591,6 +609,7 @@ impl eframe::App for RenamerApp {
 }
 
 const CONTENT_W: f32 = 760.0;
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const C_BG: Color32 = Color32::from_rgb(245, 245, 245);
 const C_TEXT: Color32 = Color32::from_rgb(32, 32, 32);
 const C_MUTED: Color32 = Color32::from_rgb(96, 96, 96);
@@ -807,15 +826,16 @@ fn setup_cjk_fonts(ctx: &egui::Context) {
 }
 
 pub fn run() -> eframe::Result<()> {
+    let title = format!("文件批量重命名 v{APP_VERSION}");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(Vec2::new(880.0, 780.0))
             .with_min_inner_size(Vec2::new(680.0, 560.0))
-            .with_title("文件批量重命名"),
+            .with_title(title.clone()),
         ..Default::default()
     };
     eframe::run_native(
-        "文件批量重命名",
+        &title,
         options,
         Box::new(|cc| Ok(Box::new(RenamerApp::new(cc)))),
     )
